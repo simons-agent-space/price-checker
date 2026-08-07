@@ -4,15 +4,26 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
 func (s *Store) CreateSearch(ctx context.Context, search *Search) (*Search, error) {
-	return scanSearch(s.db.QueryRowContext(ctx, `
+	result, err := scanSearch(s.db.QueryRowContext(ctx, `
 		INSERT INTO searches (name, query, check_interval_s, next_check_at)
 		VALUES (?, ?, ?, ?)
 		RETURNING id, name, query, check_interval_s, next_check_at, created_at
 	`, search.Name, search.Query, int64(search.CheckInterval.Seconds()), search.NextCheckAt.Unix()))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return nil, ErrConflict
+		}
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *Store) GetSearch(ctx context.Context, id int64) (*Search, error) {

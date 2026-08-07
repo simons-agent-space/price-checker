@@ -2,6 +2,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/simons-agent-space/price-checker/internal/store"
 )
+
+const maxRequestBodyBytes = 64 * 1024
 
 type CreateSearchRequest struct {
 	Name          string `json:"name"`
@@ -47,8 +50,14 @@ func (s *Server) Register(mux *http.ServeMux) {
 }
 
 func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	var req CreateSearchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusBadRequest, "request body too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -63,8 +72,8 @@ func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid check_interval")
 		return
 	}
-	if interval <= 0 {
-		writeError(w, http.StatusBadRequest, "check_interval must be positive")
+	if interval < time.Second {
+		writeError(w, http.StatusBadRequest, "check_interval must be at least 1 second")
 		return
 	}
 	created, err := s.store.CreateSearch(r.Context(), &store.Search{
@@ -74,6 +83,10 @@ func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
 		NextCheckAt:   time.Now().Add(interval),
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, "search with this name and query already exists")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create search")
 		return
 	}
@@ -147,4 +160,61 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, ErrorResponse{Error: msg})
+}
+
+// bufferedWriter is an http.ResponseWriter that captures the response so the
+// middleware can decide whether to rewrite it (e.g. as JSON for 404/405).
+type bufferedWriter struct {
+	http.ResponseWriter
+	headers       http.Header
+	status        int
+	body          bytes.Buffer
+	headerWritten bool
+}
+
+func (w *bufferedWriter) Header() http.Header {
+	return w.headers
+}
+
+func (w *bufferedWriter) WriteHeader(code int) {
+	if w.headerWritten {
+		return
+	}
+	w.status = code
+	w.headerWritten = true
+}
+
+func (w *bufferedWriter) Write(b []byte) (int, error) {
+	if !w.headerWritten {
+		w.status = http.StatusOK
+		w.headerWritten = true
+	}
+	return w.body.Write(b)
+}
+
+// JSONErrors wraps next so that the Go 1.22 ServeMux plain-text 404/405
+// responses are rewritten as JSON ErrorResponse bodies. Successful responses
+// pass through unchanged.
+func JSONErrors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := &bufferedWriter{
+			ResponseWriter: w,
+			headers:        make(http.Header),
+		}
+		next.ServeHTTP(buf, r)
+		if buf.status == 0 {
+			buf.status = http.StatusOK
+		}
+		if buf.status == http.StatusNotFound || buf.status == http.StatusMethodNotAllowed {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(buf.status)
+			_ = json.NewEncoder(w).Encode(ErrorResponse{Error: http.StatusText(buf.status)})
+			return
+		}
+		for k, v := range buf.headers {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(buf.status)
+		_, _ = w.Write(buf.body.Bytes())
+	})
 }

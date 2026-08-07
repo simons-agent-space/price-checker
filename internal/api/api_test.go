@@ -12,15 +12,21 @@ import (
 	"github.com/simons-agent-space/price-checker/internal/store"
 )
 
-func TestCreateSearch(t *testing.T) {
+func newTestServer(t *testing.T) http.Handler {
+	t.Helper()
 	srv := api.New(store.NewTestStore(t))
 	mux := http.NewServeMux()
 	srv.Register(mux)
+	return api.JSONErrors(mux)
+}
+
+func TestCreateSearch(t *testing.T) {
+	handler := newTestServer(t)
 
 	body := `{"name":"Sony WH-1000XM5","query":"sony wh-1000xm5","check_interval":"1h"}`
 	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201", rec.Code)
@@ -51,15 +57,13 @@ func TestCreateSearch(t *testing.T) {
 }
 
 func TestListSearches(t *testing.T) {
-	srv := api.New(store.NewTestStore(t))
-	mux := http.NewServeMux()
-	srv.Register(mux)
+	handler := newTestServer(t)
 
 	// Empty list
 	{
 		req := httptest.NewRequest(http.MethodGet, "/searches", nil)
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, req)
+		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Errorf("empty list: status = %d, want 200", rec.Code)
 		}
@@ -77,7 +81,7 @@ func TestListSearches(t *testing.T) {
 		body := `{"name":"` + name + `","query":"test","check_interval":"1h"}`
 		req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, req)
+		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("create %q: status = %d, want 201", name, rec.Code)
 		}
@@ -87,7 +91,7 @@ func TestListSearches(t *testing.T) {
 	{
 		req := httptest.NewRequest(http.MethodGet, "/searches", nil)
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, req)
+		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Errorf("non-empty list: status = %d, want 200", rec.Code)
 		}
@@ -102,14 +106,12 @@ func TestListSearches(t *testing.T) {
 }
 
 func TestGetSearch(t *testing.T) {
-	srv := api.New(store.NewTestStore(t))
-	mux := http.NewServeMux()
-	srv.Register(mux)
+	handler := newTestServer(t)
 
 	createBody := `{"name":"test","query":"test","check_interval":"1h"}`
 	createReq := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
-	mux.ServeHTTP(createRec, createReq)
+	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d, want 201", createRec.Code)
 	}
@@ -120,7 +122,7 @@ func TestGetSearch(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/searches/"+strconv.FormatInt(created.ID, 10), nil)
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("get: status = %d, want 200", rec.Code)
 	}
@@ -137,14 +139,15 @@ func TestGetSearch(t *testing.T) {
 }
 
 func TestDeleteSearch(t *testing.T) {
-	srv := api.New(store.NewTestStore(t))
-	mux := http.NewServeMux()
-	srv.Register(mux)
+	handler := newTestServer(t)
 
 	createBody := `{"name":"test","query":"test","check_interval":"1h"}`
 	createReq := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
-	mux.ServeHTTP(createRec, createReq)
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201", createRec.Code)
+	}
 	var created api.SearchResponse
 	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
 		t.Fatal(err)
@@ -154,7 +157,7 @@ func TestDeleteSearch(t *testing.T) {
 	{
 		req := httptest.NewRequest(http.MethodDelete, "/searches/"+strconv.FormatInt(created.ID, 10), nil)
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, req)
+		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNoContent {
 			t.Errorf("delete: status = %d, want 204", rec.Code)
 		}
@@ -164,7 +167,7 @@ func TestDeleteSearch(t *testing.T) {
 	{
 		req := httptest.NewRequest(http.MethodGet, "/searches/"+strconv.FormatInt(created.ID, 10), nil)
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, req)
+		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("get after delete: status = %d, want 404", rec.Code)
 		}
@@ -172,9 +175,7 @@ func TestDeleteSearch(t *testing.T) {
 }
 
 func TestSearchesValidation(t *testing.T) {
-	srv := api.New(store.NewTestStore(t))
-	mux := http.NewServeMux()
-	srv.Register(mux)
+	handler := newTestServer(t)
 
 	tests := []struct {
 		name       string
@@ -189,6 +190,7 @@ func TestSearchesValidation(t *testing.T) {
 		{"whitespace query", "POST", "/searches", `{"name":"x","query":"  ","check_interval":"1h"}`, http.StatusBadRequest},
 		{"invalid interval", "POST", "/searches", `{"name":"x","query":"x","check_interval":"junk"}`, http.StatusBadRequest},
 		{"zero interval", "POST", "/searches", `{"name":"x","query":"x","check_interval":"0s"}`, http.StatusBadRequest},
+		{"1ns interval", "POST", "/searches", `{"name":"x","query":"x","check_interval":"1ns"}`, http.StatusBadRequest},
 		{"negative interval", "POST", "/searches", `{"name":"x","query":"x","check_interval":"-1h"}`, http.StatusBadRequest},
 		{"malformed body", "POST", "/searches", `{not json`, http.StatusBadRequest},
 		{"get invalid id", "GET", "/searches/abc", "", http.StatusBadRequest},
@@ -202,23 +204,130 @@ func TestSearchesValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, req)
+			handler.ServeHTTP(rec, req)
 			if rec.Code != tt.wantStatus {
 				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if tt.wantStatus >= 400 {
+				if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+					t.Errorf("Content-Type = %q, want application/json", ct)
+				}
+				var errResp api.ErrorResponse
+				if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+					t.Errorf("invalid JSON error body: %v", err)
+				}
+				if errResp.Error == "" {
+					t.Error("error response missing 'error' field")
+				}
 			}
 		})
 	}
 }
 
-func TestSearchesMethodNotAllowed(t *testing.T) {
-	srv := api.New(store.NewTestStore(t))
-	mux := http.NewServeMux()
-	srv.Register(mux)
+func TestCreateSearchConflict(t *testing.T) {
+	handler := newTestServer(t)
+
+	body := `{"name":"x","query":"y","check_interval":"1h"}`
+
+	// First create
+	{
+		req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("first create: status = %d, want 201", rec.Code)
+		}
+	}
+
+	// Second create with same (name, query) — should be 409
+	{
+		req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusConflict {
+			t.Errorf("duplicate create: status = %d, want 409", rec.Code)
+		}
+		var errResp api.ErrorResponse
+		if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+			t.Errorf("invalid JSON error body: %v", err)
+		}
+		if errResp.Error == "" {
+			t.Error("error response missing 'error' field")
+		}
+	}
+
+	// Different name — should succeed
+	{
+		body := `{"name":"z","query":"y","check_interval":"1h"}`
+		req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Errorf("different name: status = %d, want 201", rec.Code)
+		}
+	}
+}
+
+func TestCreateSearchBodyTooLarge(t *testing.T) {
+	handler := newTestServer(t)
+
+	// Build a body just over 64KB
+	padding := strings.Repeat("a", 70_000)
+	body := `{"name":"` + padding + `","query":"x","check_interval":"1h"}`
+
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+	var errResp api.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Errorf("invalid JSON error body: %v", err)
+	}
+	if errResp.Error == "" {
+		t.Error("error response missing 'error' field")
+	}
+}
+
+func TestMethodNotAllowedJSON(t *testing.T) {
+	handler := newTestServer(t)
 
 	req := httptest.NewRequest("PATCH", "/searches", nil)
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("PATCH /searches: status = %d, want 405", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var body api.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Errorf("invalid JSON: %v", err)
+	}
+	if body.Error == "" {
+		t.Error("error response missing 'error' field")
+	}
+}
+
+func TestNotFoundJSON(t *testing.T) {
+	handler := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var body api.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Errorf("invalid JSON: %v", err)
+	}
+	if body.Error == "" {
+		t.Error("error response missing 'error' field")
 	}
 }

@@ -48,7 +48,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           api.JSONErrors(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

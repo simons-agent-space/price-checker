@@ -43,7 +43,7 @@ jobs:
         run: go vet ./...
 
       - name: Build application
-        run: go build ./cmd/crons
+        run: go build ./cmd/price-checker
 
       - name: Lint Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
@@ -57,7 +57,7 @@ jobs:
         run: docker compose config --quiet
 
       - name: Build container image
-        run: docker build --tag cron-dashboard:ci .
+        run: docker build --tag price-checker:ci .
 
   deploy:
     name: Deploy

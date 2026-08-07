@@ -4,4 +4,4 @@ services:
     restart: unless-stopped
 
     ports:
-      - "127.0.0.1:${APP_HOST_PORT:?APP_HOST_PORT is required}:3000"
+      - "127.0.0.1:18081:3000"

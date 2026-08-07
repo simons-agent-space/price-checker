@@ -4,4 +4,13 @@ services:
     restart: unless-stopped
 
     ports:
-      - "127.0.0.1:18081:3000"
+      - "127.0.0.1:${APP_HOST_PORT:?APP_HOST_PORT is required}:3000"
+
+    volumes:
+      - price-checker-data:/data
+
+    environment:
+      DATABASE_URL: "file:/data/price-checker.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+
+volumes:
+  price-checker-data:

@@ -1,39 +1,81 @@
 // Package main implements the price-checker service.
-//
-// Status: placeholder. Single /healthz route so the deployment pipeline
-// can be exercised end-to-end. The end goal is described in the design
-// document — OpenClaw creates product searches, the service polls URLs,
-// tracks price history, detects unusually good prices, and sends Telegram
-// notifications.
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/simons-agent-space/price-checker/internal/store"
 )
 
-func newMux() *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
-	return mux
-}
-
-func healthz(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	db, err := sql.Open("sqlite", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		slog.Error("open db", "err", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1) // ponytail: SQLite WAL serialises writers; 1 conn avoids SQLITE_BUSY
+
+	if err := store.Migrate(db); err != nil {
+		slog.Error("migrate", "err", err)
+		os.Exit(1)
+	}
+
+	st := store.New(db)
+	_ = st // PR #3 wires the API to use this store
+
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
 		addr = ":3000"
 	}
 
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", healthz(db))
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("shutdown", "err", err)
+		}
+	}()
+
 	slog.Info("starting price-checker", "addr", addr)
-	if err := http.ListenAndServe(addr, newMux()); err != nil {
-		slog.Error("server failed", "err", err)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Error("listen", "err", err)
 		os.Exit(1)
+	}
+}
+
+func healthz(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			http.Error(w, `{"status":"db unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
 }

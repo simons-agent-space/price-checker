@@ -18,15 +18,15 @@ func TestCreateAndGetSearch(t *testing.T) {
 		NextCheckAt:   time.Now().Add(time.Hour).Truncate(time.Second),
 	}
 
-	id, err := s.CreateSearch(ctx, search)
+	created, err := s.CreateSearch(ctx, search)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id == 0 {
+	if created.ID == 0 {
 		t.Fatal("expected non-zero id")
 	}
 
-	got, err := s.GetSearch(ctx, id)
+	got, err := s.GetSearch(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestDeleteSearch(t *testing.T) {
 	s := NewTestStore(t)
 	ctx := context.Background()
 
-	id, err := s.CreateSearch(ctx, &Search{
+	created, err := s.CreateSearch(ctx, &Search{
 		Name:          "test",
 		Query:         "test",
 		CheckInterval: time.Hour,
@@ -91,11 +91,11 @@ func TestDeleteSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.DeleteSearch(ctx, id); err != nil {
+	if err := s.DeleteSearch(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = s.GetSearch(ctx, id)
+	_, err = s.GetSearch(ctx, created.ID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
@@ -105,18 +105,18 @@ func TestDeleteSearchCascadesProducts(t *testing.T) {
 	s := NewTestStore(t)
 	ctx := context.Background()
 
-	searchID, _ := s.CreateSearch(ctx, &Search{
+	created, _ := s.CreateSearch(ctx, &Search{
 		Name:          "test",
 		Query:         "test",
 		CheckInterval: time.Hour,
 		NextCheckAt:   time.Now().Add(time.Hour),
 	})
 	productID, _ := s.AddProduct(ctx, &Product{
-		SearchID: searchID,
+		SearchID: created.ID,
 		URL:      "https://example.com",
 	})
 
-	if err := s.DeleteSearch(ctx, searchID); err != nil {
+	if err := s.DeleteSearch(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,7 +130,7 @@ func TestUpdateNextCheck(t *testing.T) {
 	s := NewTestStore(t)
 	ctx := context.Background()
 
-	id, _ := s.CreateSearch(ctx, &Search{
+	created, _ := s.CreateSearch(ctx, &Search{
 		Name:          "test",
 		Query:         "test",
 		CheckInterval: time.Hour,
@@ -138,11 +138,11 @@ func TestUpdateNextCheck(t *testing.T) {
 	})
 
 	newNext := time.Now().Add(2 * time.Hour).Truncate(time.Second)
-	if err := s.UpdateNextCheck(ctx, id, newNext); err != nil {
+	if err := s.UpdateNextCheck(ctx, created.ID, newNext); err != nil {
 		t.Fatal(err)
 	}
 
-	got, _ := s.GetSearch(ctx, id)
+	got, _ := s.GetSearch(ctx, created.ID)
 	if !got.NextCheckAt.Equal(newNext) {
 		t.Errorf("NextCheckAt = %v, want %v", got.NextCheckAt, newNext)
 	}

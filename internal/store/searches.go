@@ -7,15 +7,12 @@ import (
 	"time"
 )
 
-func (s *Store) CreateSearch(ctx context.Context, search *Search) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `
+func (s *Store) CreateSearch(ctx context.Context, search *Search) (*Search, error) {
+	return scanSearch(s.db.QueryRowContext(ctx, `
 		INSERT INTO searches (name, query, check_interval_s, next_check_at)
 		VALUES (?, ?, ?, ?)
-	`, search.Name, search.Query, int64(search.CheckInterval.Seconds()), search.NextCheckAt.Unix())
-	if err != nil {
-		return 0, err
-	}
-	return result.LastInsertId()
+		RETURNING id, name, query, check_interval_s, next_check_at, created_at
+	`, search.Name, search.Query, int64(search.CheckInterval.Seconds()), search.NextCheckAt.Unix()))
 }
 
 func (s *Store) GetSearch(ctx context.Context, id int64) (*Search, error) {
@@ -38,11 +35,11 @@ func (s *Store) ListSearches(ctx context.Context) ([]*Search, error) {
 
 	var searches []*Search
 	for rows.Next() {
-		s, err := scanSearch(rows)
+		search, err := scanSearch(rows)
 		if err != nil {
 			return nil, err
 		}
-		searches = append(searches, s)
+		searches = append(searches, search)
 	}
 	return searches, rows.Err()
 }
@@ -89,11 +86,11 @@ func (s *Store) ListDueSearches(ctx context.Context, now time.Time) ([]*Search, 
 
 	var searches []*Search
 	for rows.Next() {
-		s, err := scanSearch(rows)
+		search, err := scanSearch(rows)
 		if err != nil {
 			return nil, err
 		}
-		searches = append(searches, s)
+		searches = append(searches, search)
 	}
 	return searches, rows.Err()
 }

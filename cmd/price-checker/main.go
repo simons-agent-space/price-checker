@@ -14,6 +14,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/simons-agent-space/price-checker/internal/api"
 	"github.com/simons-agent-space/price-checker/internal/store"
 )
 
@@ -35,7 +36,6 @@ func main() {
 	}
 
 	st := store.New(db)
-	_ = st // PR #3 wires the API to use this store
 
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
@@ -44,6 +44,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz(db))
+	api.New(st).Register(mux)
 
 	srv := &http.Server{
 		Addr:              addr,

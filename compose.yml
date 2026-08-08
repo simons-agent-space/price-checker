@@ -1,6 +1,12 @@
 services:
   price-checker:
     build: .
+    # Run as root inside the container so the process can write to the
+    # named volume. The volume is created root-owned by Docker; the
+    # distroless nonroot (UID 65532) cannot. Tradeoff: loses nonroot
+    # benefit. Cleaner fix is a bind mount with pre-set ownership via the
+    # provisioner — deferred.
+    user: "0:0"
     restart: unless-stopped
 
     ports:
@@ -11,6 +17,14 @@ services:
 
     environment:
       DATABASE_URL: "file:/data/price-checker.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+    # Distroless lacks a shell, so CMD-SHELL is unavailable. The binary
+    # supports its own non-mutating probe instead.
+    healthcheck:
+      test: ["CMD", "/price-checker", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   price-checker-data:

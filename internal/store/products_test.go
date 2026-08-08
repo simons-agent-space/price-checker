@@ -11,17 +11,17 @@ func TestAddAndListProducts(t *testing.T) {
 	s := NewTestStore(t)
 	ctx := context.Background()
 
-	searchID, _ := s.CreateSearch(ctx, &Search{
+	created, _ := s.CreateSearch(ctx, &Search{
 		Name:          "test",
 		Query:         "test",
 		CheckInterval: time.Hour,
 		NextCheckAt:   time.Now().Add(time.Hour),
 	})
 
-	_, _ = s.AddProduct(ctx, &Product{SearchID: searchID, URL: "https://a.com"})
-	_, _ = s.AddProduct(ctx, &Product{SearchID: searchID, URL: "https://b.com"})
+	_, _ = s.AddProduct(ctx, &Product{SearchID: created.ID, URL: "https://a.com"})
+	_, _ = s.AddProduct(ctx, &Product{SearchID: created.ID, URL: "https://b.com"})
 
-	products, err := s.ListProductsBySearch(ctx, searchID)
+	products, err := s.ListProductsBySearch(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,16 +34,16 @@ func TestAddProductDuplicate(t *testing.T) {
 	s := NewTestStore(t)
 	ctx := context.Background()
 
-	searchID, _ := s.CreateSearch(ctx, &Search{
+	created, _ := s.CreateSearch(ctx, &Search{
 		Name:          "test",
 		Query:         "test",
 		CheckInterval: time.Hour,
 		NextCheckAt:   time.Now().Add(time.Hour),
 	})
-	_, _ = s.AddProduct(ctx, &Product{SearchID: searchID, URL: "https://example.com"})
+	_, _ = s.AddProduct(ctx, &Product{SearchID: created.ID, URL: "https://example.com"})
 
 	_, err := s.AddProduct(ctx, &Product{
-		SearchID: searchID,
+		SearchID: created.ID,
 		URL:      "https://example.com",
 	})
 	if !errors.Is(err, ErrConflict) {
@@ -66,14 +66,14 @@ func TestGetProduct(t *testing.T) {
 	s := NewTestStore(t)
 	ctx := context.Background()
 
-	searchID, _ := s.CreateSearch(ctx, &Search{
+	created, _ := s.CreateSearch(ctx, &Search{
 		Name:          "test",
 		Query:         "test",
 		CheckInterval: time.Hour,
 		NextCheckAt:   time.Now().Add(time.Hour),
 	})
 	productID, _ := s.AddProduct(ctx, &Product{
-		SearchID: searchID,
+		SearchID: created.ID,
 		URL:      "https://example.com",
 	})
 
@@ -98,14 +98,14 @@ func TestDeleteProduct(t *testing.T) {
 	s := NewTestStore(t)
 	ctx := context.Background()
 
-	searchID, _ := s.CreateSearch(ctx, &Search{
+	created, _ := s.CreateSearch(ctx, &Search{
 		Name:          "test",
 		Query:         "test",
 		CheckInterval: time.Hour,
 		NextCheckAt:   time.Now().Add(time.Hour),
 	})
 	productID, _ := s.AddProduct(ctx, &Product{
-		SearchID: searchID,
+		SearchID: created.ID,
 		URL:      "https://example.com",
 	})
 

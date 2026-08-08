@@ -21,6 +21,7 @@ import (
 	"github.com/simons-agent-space/price-checker/internal/notifier"
 	"github.com/simons-agent-space/price-checker/internal/scheduler"
 	"github.com/simons-agent-space/price-checker/internal/store"
+	"github.com/simons-agent-space/price-checker/internal/web"
 )
 
 func main() {
@@ -63,6 +64,18 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz(db))
 	api.New(st).Register(mux)
+	// Web UI: enabled when both HTTP_BASIC_AUTH_USER and
+	// HTTP_BASIC_AUTH_PASS are set. When either is missing, the web
+	// package's Register is a no-op and only the JSON API is served.
+	webSrv, err := web.New(st,
+		os.Getenv("HTTP_BASIC_AUTH_USER"),
+		os.Getenv("HTTP_BASIC_AUTH_PASS"),
+		slog.Default())
+	if err != nil {
+		slog.Error("init web", "err", err)
+		os.Exit(1)
+	}
+	webSrv.Register(mux)
 
 	srv := &http.Server{
 		Addr:              addr,

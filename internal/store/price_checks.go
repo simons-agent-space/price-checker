@@ -62,7 +62,7 @@ func (s *Store) ListRecentPriceChecks(ctx context.Context, productID int64, limi
 		SELECT id, product_id, price_cents, currency, success, error, checked_at
 		FROM price_checks
 		WHERE product_id = ? AND success = 1
-		ORDER BY checked_at DESC
+		ORDER BY checked_at DESC, id DESC
 		LIMIT ?
 	`, productID, limit)
 	if err != nil {
@@ -99,6 +99,52 @@ func scanPriceCheck(s scanner) (*PriceCheck, error) {
 	}
 	check.CheckedAt = time.Unix(checkedAt, 0)
 	return &check, nil
+}
+
+// ListRecentChecks returns the most recent `limit` checks for a product,
+// newest first, regardless of success status. Used by the web UI to show
+// the full price history including failed attempts (the deal detector
+// uses the successful-only sibling above).
+func (s *Store) ListRecentChecks(ctx context.Context, productID int64, limit int) ([]*PriceCheck, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, product_id, price_cents, currency, success, error, checked_at
+		FROM price_checks
+		WHERE product_id = ?
+		ORDER BY checked_at DESC, id DESC
+		LIMIT ?
+	`, productID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var checks []*PriceCheck
+	for rows.Next() {
+		check, err := scanPriceCheck(rows)
+		if err != nil {
+			return nil, err
+		}
+		checks = append(checks, check)
+	}
+	return checks, rows.Err()
+}
+
+// GetLastCheck returns the most recent price check for a product,
+// regardless of success status. Used by the web UI to display the
+// latest attempt's status on the search list; the successful-only
+// ListRecentPriceChecks would hide failures.
+func (s *Store) GetLastCheck(ctx context.Context, productID int64) (*PriceCheck, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, product_id, price_cents, currency, success, error, checked_at
+		FROM price_checks
+		WHERE product_id = ?
+		ORDER BY checked_at DESC, id DESC
+		LIMIT 1
+	`, productID)
+	return scanPriceCheck(row)
 }
 
 // b2i converts a bool to SQLite's INTEGER 0/1 representation. SQLite has

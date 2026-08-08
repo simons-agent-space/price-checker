@@ -1,0 +1,32 @@
+{{define "content"}}
+<h2>Deals</h2>
+<p class="muted">Products whose latest price is at least 20% below the median of the last 10 checks.</p>
+{{if .Deals}}
+<table>
+    <thead>
+        <tr>
+            <th>Search</th>
+            <th>Product</th>
+            <th>Current</th>
+            <th>Median</th>
+            <th>Discount</th>
+            <th>Detected</th>
+        </tr>
+    </thead>
+    <tbody>
+    {{range .Deals}}
+        <tr>
+            <td>{{.SearchName}}</td>
+            <td class="url-cell"><a href="/products/{{.ProductID}}">{{.URL}}</a></td>
+            <td><strong>{{.CurrentPrice}}</strong></td>
+            <td>{{.MedianPrice}}</td>
+            <td><span class="deal-discount">-{{.DiscountPct}}%</span></td>
+            <td>{{.CheckedAt}}</td>
+        </tr>
+    {{end}}
+    </tbody>
+</table>
+{{else}}
+<div class="empty">No deals right now. The checker flags a deal when the latest price is at least 20% below the median of the last 10 checks.</div>
+{{end}}
+{{end}}

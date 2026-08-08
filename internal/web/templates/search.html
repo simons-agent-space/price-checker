@@ -1,0 +1,37 @@
+{{define "content"}}
+<div class="breadcrumb">
+    <a href="/">searches</a> &rsaquo; <strong>{{.Search.Name}}</strong>
+</div>
+<h2>{{.Search.Name}}</h2>
+<p class="muted">query: {{.Search.Query}} &middot; interval: {{.Search.CheckInterval}} &middot; next check: {{.Search.NextCheckAt}}</p>
+{{if .Products}}
+<table>
+    <thead>
+        <tr>
+            <th>URL</th>
+            <th>Last checked</th>
+            <th>Latest price</th>
+            <th>Status</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    {{range .Products}}
+        <tr>
+            <td class="url-cell">{{.URL}}</td>
+            <td>{{.LastCheckedAt}}</td>
+            <td>{{if .LatestPrice}}{{.LatestPrice}}{{else}}<span class="muted">—</span>{{end}}</td>
+            <td>
+                {{if .LatestCheckOK}}<span class="ok">ok</span>
+                {{else if .LatestError}}<span class="err" title="{{.LatestError}}">failed</span>
+                {{else}}<span class="muted">—</span>{{end}}
+            </td>
+            <td><a class="btn" href="/products/{{.ID}}">history</a></td>
+        </tr>
+    {{end}}
+    </tbody>
+</table>
+{{else}}
+<div class="empty">No products in this search yet.</div>
+{{end}}
+{{end}}

@@ -1,0 +1,35 @@
+{{define "content"}}
+<div class="breadcrumb">
+    <a href="/">searches</a> &rsaquo; <a href="/searches/{{.Search.ID}}">{{.Search.Name}}</a> &rsaquo; <strong>product</strong>
+</div>
+<h2>Product</h2>
+<p class="url-cell muted">{{.Prod.URL}}</p>
+<p>
+    {{if .Prod.LatestPrice}}<strong>{{.Prod.LatestPrice}}</strong> &middot; last checked {{.Prod.LastCheckedAt}}{{end}}
+    {{if not .Prod.LatestCheckOK}}<br><span class="err">{{.Prod.LatestError}}</span>{{end}}
+</p>
+{{if .Checks}}
+<table>
+    <thead>
+        <tr>
+            <th>Checked at</th>
+            <th>Price</th>
+            <th>Status</th>
+            <th>Error</th>
+        </tr>
+    </thead>
+    <tbody>
+    {{range .Checks}}
+        <tr>
+            <td>{{.CheckedAt}}</td>
+            <td>{{if .Success}}{{.Price}}{{else}}<span class="muted">—</span>{{end}}</td>
+            <td>{{if .Success}}<span class="ok">ok</span>{{else}}<span class="err">failed</span>{{end}}</td>
+            <td class="muted">{{.Error}}</td>
+        </tr>
+    {{end}}
+    </tbody>
+</table>
+{{else}}
+<div class="empty">No price checks yet.</div>
+{{end}}
+{{end}}

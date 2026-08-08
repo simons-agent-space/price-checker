@@ -67,6 +67,24 @@ func (s *Store) DeleteProduct(ctx context.Context, id int64) error {
 	return nil
 }
 
+// UpdateProductCheckedAt stamps the product's last_checked_at. Called by the
+// checker after every check attempt (success or failure) so the dashboard
+// can show "checked 5 min ago" without scanning price_checks.
+func (s *Store) UpdateProductCheckedAt(ctx context.Context, id int64, at time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE products SET last_checked_at = ? WHERE id = ?`, at.Unix(), id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func scanProduct(s scanner) (*Product, error) {
 	var product Product
 	var lastChecked sql.NullInt64

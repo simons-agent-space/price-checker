@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,6 +20,19 @@ import (
 )
 
 func main() {
+	// Compose healthcheck probe. Distroless has no shell, so CMD-SHELL is
+	// unavailable in the compose healthcheck. The binary supports its own
+	// non-mutating probe instead: ping the DB with a short timeout, exit 0
+	// on success, 1 on failure. Runs before migrations so a broken DB
+	// surface shows up as an unhealthy container rather than an exit.
+	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
+		if err := runHealthcheck(); err != nil {
+			fmt.Fprintln(os.Stderr, "healthcheck failed:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -79,4 +93,26 @@ func healthz(db *sql.DB) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
+}
+
+// runHealthcheck is the CLI probe used by the compose healthcheck. It opens
+// the SQLite database from DATABASE_URL, pings it with a short timeout, and
+// returns a non-nil error on any failure. It does not migrate or write.
+func runHealthcheck() error {
+	dbPath := os.Getenv("DATABASE_URL")
+	if dbPath == "" {
+		return fmt.Errorf("DATABASE_URL not set")
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping db: %w", err)
+	}
+	return nil
 }

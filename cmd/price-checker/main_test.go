@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -44,5 +46,35 @@ func TestHealthz(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Errorf("status = %q, want ok", body["status"])
+	}
+}
+
+func TestRunHealthcheck(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	t.Setenv("DATABASE_URL", "file:"+dbPath+"?_pragma=foreign_keys(1)")
+
+	// Open + migrate so the file exists with the expected schema.
+	db, err := sql.Open("sqlite", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	if err := runHealthcheck(); err != nil {
+		t.Errorf("runHealthcheck: unexpected error: %v", err)
+	}
+}
+
+func TestRunHealthcheckMissingEnv(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	err := runHealthcheck()
+	if err == nil {
+		t.Fatal("runHealthcheck: expected error for empty DATABASE_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Errorf("runHealthcheck: error = %q, want mention of DATABASE_URL", err)
 	}
 }

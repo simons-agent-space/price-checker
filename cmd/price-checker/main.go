@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/simons-agent-space/price-checker/internal/api"
+	"github.com/simons-agent-space/price-checker/internal/scheduler"
 	"github.com/simons-agent-space/price-checker/internal/store"
 )
 
@@ -66,13 +68,48 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// SCHEDULER_INTERVAL is operator-facing; invalid input is logged and
+	// the default (30s) is used.
+	interval := 30 * time.Second
+	if v := os.Getenv("SCHEDULER_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			slog.Warn("invalid SCHEDULER_INTERVAL, using default", "value", v, "err", err)
+		} else {
+			interval = d
+		}
+	}
+
+	// Stub check: PR #5 replaces this closure with the real fetcher +
+	// deal detector. The scheduler bounds each call to interval.
+	check := func(ctx context.Context, s *store.Search) error {
+		slog.Info("would check search",
+			"id", s.ID,
+			"name", s.Name,
+			"query", s.Query,
+		)
+		return nil
+	}
+
+	sched := scheduler.New(st, check, interval, slog.Default())
+	slog.Info("starting scheduler", "interval", interval)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("shutdown", "err", err)
+			slog.Error("shutdown http", "err", err)
 		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sched.Run(ctx)
 	}()
 
 	slog.Info("starting price-checker", "addr", addr)
@@ -80,6 +117,8 @@ func main() {
 		slog.Error("listen", "err", err)
 		os.Exit(1)
 	}
+
+	wg.Wait()
 }
 
 func healthz(db *sql.DB) http.HandlerFunc {

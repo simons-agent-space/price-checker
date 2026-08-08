@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/simons-agent-space/price-checker/internal/notifier"
 	"github.com/simons-agent-space/price-checker/internal/store"
 )
 
@@ -199,7 +200,7 @@ func TestChecker_SuccessRecordsPriceCheck(t *testing.T) {
 	defer page.Close()
 
 	st, search, product := setupSearchProduct(t, page.URL)
-	c := New(st, silentLogger())
+	c := New(st, notifier.Noop{}, silentLogger())
 
 	if err := c.Check(context.Background(), search); err != nil {
 		t.Fatalf("Check: %v", err)
@@ -242,7 +243,7 @@ func TestChecker_FetchFailureRecordsFailedCheck(t *testing.T) {
 	defer page.Close()
 
 	st, search, product := setupSearchProduct(t, page.URL)
-	c := New(st, silentLogger())
+	c := New(st, notifier.Noop{}, silentLogger())
 
 	if err := c.Check(context.Background(), search); err != nil {
 		t.Fatalf("Check: %v", err)
@@ -270,7 +271,7 @@ func TestChecker_ParseFailureRecordsFailedCheck(t *testing.T) {
 	defer page.Close()
 
 	st, search, product := setupSearchProduct(t, page.URL)
-	c := New(st, silentLogger())
+	c := New(st, notifier.Noop{}, silentLogger())
 
 	if err := c.Check(context.Background(), search); err != nil {
 		t.Fatalf("Check: %v", err)
@@ -308,7 +309,7 @@ func TestChecker_DealDetected(t *testing.T) {
 
 	rec := &recordingHandler{}
 	logger := slog.New(rec)
-	c := New(st, logger)
+	c := New(st, notifier.Noop{}, logger)
 
 	if err := c.Check(ctx, search); err != nil {
 		t.Fatalf("Check: %v", err)
@@ -339,7 +340,7 @@ func TestChecker_NoDealAboveThreshold(t *testing.T) {
 	}
 
 	rec := &recordingHandler{}
-	c := New(st, slog.New(rec))
+	c := New(st, notifier.Noop{}, slog.New(rec))
 
 	if err := c.Check(ctx, search); err != nil {
 		t.Fatalf("Check: %v", err)
@@ -376,7 +377,7 @@ func TestChecker_MultipleProducts(t *testing.T) {
 		}
 	}
 
-	c := New(st, silentLogger())
+	c := New(st, notifier.Noop{}, silentLogger())
 	if err := c.Check(ctx, search); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -405,11 +406,11 @@ func TestChecker_NilStorePanics(t *testing.T) {
 			t.Fatal("expected panic for nil store")
 		}
 	}()
-	_ = New(nil, silentLogger())
+	_ = New(nil, notifier.Noop{}, silentLogger())
 }
 
 func TestChecker_NilLoggerFallsBack(t *testing.T) {
-	c := New(store.NewTestStore(t), nil)
+	c := New(store.NewTestStore(t), notifier.Noop{}, nil)
 	if c.logger == nil {
 		t.Error("logger is nil, want fallback")
 	}
@@ -442,7 +443,7 @@ func TestChecker_CtxCancelStopsIteration(t *testing.T) {
 		}
 	}
 
-	c := New(st, silentLogger())
+	c := New(st, notifier.Noop{}, silentLogger())
 	// Cancel after the first check returns from checkProduct; the
 	// second iteration's ctx.Err() check returns the error.
 	cancel()
@@ -498,5 +499,116 @@ func TestFetcher_NonOKReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Errorf("err = %v, want mention of 404", err)
+	}
+}
+
+// --- notifier integration ---
+
+// recordingNotifier captures every Notify call so tests can assert that a
+// deal reached the notifier and inspect the payload. It can also be
+// configured to return an error to test the checker's error handling.
+type recordingNotifier struct {
+	calls []notifier.Deal
+	err   error
+}
+
+func (r *recordingNotifier) Notify(_ context.Context, d notifier.Deal) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.calls = append(r.calls, d)
+	return nil
+}
+
+func TestChecker_DealTriggersNotifier(t *testing.T) {
+	// Page returns €1.00 (100 cents). Baseline of 3 checks at 1000 cents
+	// gives median 1000, cutoff 800. 100 < 800 → deal → Notify.
+	page := pageServer(t, `<html><span class="price">€1.00</span></html>`)
+	defer page.Close()
+
+	st, search, product := setupSearchProduct(t, page.URL)
+	ctx := context.Background()
+
+	for range 3 {
+		if _, err := st.RecordPriceCheck(ctx, &store.PriceCheck{
+			ProductID:  product.ID,
+			PriceCents: 1000,
+			Currency:   "EUR",
+			Success:    true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rn := &recordingNotifier{}
+	c := New(st, rn, silentLogger())
+
+	if err := c.Check(ctx, search); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("notifier calls = %d, want 1", len(rn.calls))
+	}
+	got := rn.calls[0]
+	if got.ProductID != product.ID {
+		t.Errorf("ProductID = %d, want %d", got.ProductID, product.ID)
+	}
+	if got.ProductURL != product.URL {
+		t.Errorf("ProductURL = %q, want %q", got.ProductURL, product.URL)
+	}
+	if got.PriceCents != 100 {
+		t.Errorf("PriceCents = %d, want 100", got.PriceCents)
+	}
+	if got.MedianCents != 1000 {
+		t.Errorf("MedianCents = %d, want 1000", got.MedianCents)
+	}
+	if got.Currency != "EUR" {
+		t.Errorf("Currency = %q, want EUR", got.Currency)
+	}
+}
+
+func TestChecker_NotifyErrorDoesNotAbortLoop(t *testing.T) {
+	// A notifier that returns an error must be logged but must not
+	// stop the check loop — price tracking is more important than
+	// alerting.
+	page := pageServer(t, `<html><span class="price">€1.00</span></html>`)
+	defer page.Close()
+
+	st, search, product := setupSearchProduct(t, page.URL)
+	ctx := context.Background()
+
+	for range 3 {
+		if _, err := st.RecordPriceCheck(ctx, &store.PriceCheck{
+			ProductID:  product.ID,
+			PriceCents: 1000,
+			Currency:   "EUR",
+			Success:    true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rn := &recordingNotifier{err: errors.New("telegram is down")}
+	rec := &recordingHandler{}
+	c := New(st, rn, slog.New(rec))
+
+	if err := c.Check(ctx, search); err != nil {
+		t.Fatalf("Check: %v, want nil (notifier error must not abort)", err)
+	}
+	if !rec.hasMsg("notify") {
+		t.Errorf("expected 'notify' log on notifier error, got: %v", rec.records)
+	}
+}
+
+func TestChecker_NilNotifierFallsBackToNoop(t *testing.T) {
+	// Passing nil for the notifier must be safe — the checker must
+	// always see a valid Notifier, so callers don't need a guard.
+	c := New(store.NewTestStore(t), nil, silentLogger())
+	if c.notifier == nil {
+		t.Fatal("notifier is nil, want Noop fallback")
+	}
+	if _, ok := c.notifier.(notifier.Noop); !ok {
+		t.Errorf("notifier = %T, want notifier.Noop", c.notifier)
 	}
 }

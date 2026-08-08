@@ -18,6 +18,7 @@ import (
 
 	"github.com/simons-agent-space/price-checker/internal/api"
 	"github.com/simons-agent-space/price-checker/internal/checker"
+	"github.com/simons-agent-space/price-checker/internal/notifier"
 	"github.com/simons-agent-space/price-checker/internal/scheduler"
 	"github.com/simons-agent-space/price-checker/internal/store"
 )
@@ -84,7 +85,22 @@ func main() {
 	// Checker fans each due search out to its products: fetch the URL,
 	// parse the price, record a price_check, detect deals. The scheduler
 	// bounds each call to interval.
-	ch := checker.New(st, slog.Default())
+	// Notifier: Telegram when both TELEGRAM_BOT_TOKEN and
+	// TELEGRAM_CHAT_ID are set, Noop otherwise. The checker always
+	// sees a valid Notifier, so missing creds are not a startup error.
+	var n notifier.Notifier = notifier.Noop{}
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	chatID := os.Getenv("TELEGRAM_CHAT_ID")
+	switch {
+	case token != "" && chatID != "":
+		n = notifier.NewTelegram(token, chatID)
+		slog.Info("telegram notifier enabled")
+	case token != "" || chatID != "":
+		// Exactly one set: silent fallback would make the operator
+		// think the notifier is wired when it is not. Warn loudly.
+		slog.Warn("telegram notifier misconfigured: set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, using Noop")
+	}
+	ch := checker.New(st, n, slog.Default())
 	sched := scheduler.New(st, ch.Check, interval, slog.Default())
 	slog.Info("starting scheduler", "interval", interval)
 

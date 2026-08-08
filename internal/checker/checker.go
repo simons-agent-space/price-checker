@@ -11,31 +11,39 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/simons-agent-space/price-checker/internal/notifier"
 	"github.com/simons-agent-space/price-checker/internal/store"
 )
 
 // Checker is the scheduler's CheckFunc. It owns the fetcher; the store is
-// the system-wide store. The logger is optional; passing nil falls back to
-// slog.Default().
+// the system-wide store. The notifier receives every detected deal; a nil
+// notifier is replaced with notifier.Noop so callers can pass nil safely.
 type Checker struct {
-	store   *store.Store
-	fetcher *Fetcher
-	logger  *slog.Logger
+	store    *store.Store
+	fetcher  *Fetcher
+	notifier notifier.Notifier
+	logger   *slog.Logger
 }
 
 // New returns a Checker with the default fetcher and the given logger
-// (nil → slog.Default). The store must be non-nil.
-func New(st *store.Store, logger *slog.Logger) *Checker {
+// (nil → slog.Default). The store must be non-nil. A nil notifier is
+// replaced with notifier.Noop so the checker is always wired to a valid
+// Notifier.
+func New(st *store.Store, n notifier.Notifier, logger *slog.Logger) *Checker {
 	if st == nil {
 		panic("checker: nil store")
+	}
+	if n == nil {
+		n = notifier.Noop{}
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Checker{
-		store:   st,
-		fetcher: NewFetcher(),
-		logger:  logger,
+		store:    st,
+		fetcher:  NewFetcher(),
+		notifier: n,
+		logger:   logger,
 	}
 }
 
@@ -76,6 +84,18 @@ func (c *Checker) checkProduct(ctx context.Context, p *store.Product) {
 		return
 	}
 
+	// Read the baseline BEFORE recording the current check. Otherwise
+	// the deal detector compares the current price against a median
+	// that includes itself, which suppresses legitimate deals when the
+	// current price falls inside the baseline cluster.
+	recent, err := c.store.ListRecentPriceChecks(ctx, p.ID, Window)
+	if err != nil {
+		c.logger.Error("list recent checks",
+			"product_id", p.ID, "err", err)
+		// Fall through: record the check but skip deal detection.
+		recent = nil
+	}
+
 	check := &store.PriceCheck{
 		ProductID:  p.ID,
 		PriceCents: priceCents,
@@ -92,12 +112,6 @@ func (c *Checker) checkProduct(ctx context.Context, p *store.Product) {
 			"product_id", p.ID, "err", err)
 	}
 
-	recent, err := c.store.ListRecentPriceChecks(ctx, p.ID, Window)
-	if err != nil {
-		c.logger.Error("list recent checks",
-			"product_id", p.ID, "err", err)
-		return
-	}
 	prices := make([]int64, len(recent))
 	for i, r := range recent {
 		prices[i] = r.PriceCents
@@ -108,7 +122,19 @@ func (c *Checker) checkProduct(ctx context.Context, p *store.Product) {
 			"price_cents", priceCents,
 			"median_cents", median,
 		)
-		// PR #6: notify
+		// Notify failures are logged but do not abort the check loop.
+		// A flaky notifier must not stall price tracking for the rest
+		// of the search.
+		if err := c.notifier.Notify(ctx, notifier.Deal{
+			ProductID:   p.ID,
+			ProductURL:  p.URL,
+			PriceCents:  priceCents,
+			MedianCents: median,
+			Currency:    currency,
+		}); err != nil {
+			c.logger.Error("notify",
+				"product_id", p.ID, "err", err)
+		}
 	}
 }
 

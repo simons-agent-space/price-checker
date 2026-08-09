@@ -17,6 +17,10 @@ services:
 
     environment:
       DATABASE_URL: "file:/data/price-checker.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+      HTTP_BASIC_AUTH_USER: ${HTTP_BASIC_AUTH_USER:?HTTP_BASIC_AUTH_USER must be set}
+      HTTP_BASIC_AUTH_PASS: ${HTTP_BASIC_AUTH_PASS:?HTTP_BASIC_AUTH_PASS must be set}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     # Distroless lacks a shell, so CMD-SHELL is unavailable. The binary
     # supports its own non-mutating probe instead.
     healthcheck:

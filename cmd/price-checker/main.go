@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/simons-agent-space/price-checker/internal/api"
+	"github.com/simons-agent-space/price-checker/internal/checker"
 	"github.com/simons-agent-space/price-checker/internal/scheduler"
 	"github.com/simons-agent-space/price-checker/internal/store"
 )
@@ -80,18 +81,11 @@ func main() {
 		}
 	}
 
-	// Stub check: PR #5 replaces this closure with the real fetcher +
-	// deal detector. The scheduler bounds each call to interval.
-	check := func(ctx context.Context, s *store.Search) error {
-		slog.Info("would check search",
-			"id", s.ID,
-			"name", s.Name,
-			"query", s.Query,
-		)
-		return nil
-	}
-
-	sched := scheduler.New(st, check, interval, slog.Default())
+	// Checker fans each due search out to its products: fetch the URL,
+	// parse the price, record a price_check, detect deals. The scheduler
+	// bounds each call to interval.
+	ch := checker.New(st, slog.Default())
+	sched := scheduler.New(st, ch.Check, interval, slog.Default())
 	slog.Info("starting scheduler", "interval", interval)
 
 	var wg sync.WaitGroup

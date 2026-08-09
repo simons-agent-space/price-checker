@@ -32,7 +32,7 @@ func parsePage(page string) (*template.Template, error) {
 // Server is the web UI server. When user and pass are both non-empty,
 // all registered routes require basic auth. When either is empty, the
 // web routes are not registered at all (the UI is disabled and the
-// JSON API at /searches etc. remains available).
+// JSON API at /api/searches etc. remains available).
 type Server struct {
 	store       *store.Store
 	user        string

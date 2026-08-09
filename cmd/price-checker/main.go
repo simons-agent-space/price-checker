@@ -61,25 +61,23 @@ func main() {
 		addr = ":3000"
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz(db))
-	api.New(st).Register(mux)
-	// Web UI: enabled when both HTTP_BASIC_AUTH_USER and
-	// HTTP_BASIC_AUTH_PASS are set. When either is missing, the web
-	// package's Register is a no-op and only the JSON API is served.
-	webSrv, err := web.New(st,
+	// HTTP routing is built by buildHandler so the same wiring can be
+	// exercised by tests without spinning up a real server. The
+	// JSON API is scoped to /api/ so it stays disjoint from the web
+	// UI's /searches/{id} route; without the prefix http.ServeMux
+	// panics on the duplicate pattern at startup.
+	handler, err := buildHandler(db,
 		os.Getenv("HTTP_BASIC_AUTH_USER"),
 		os.Getenv("HTTP_BASIC_AUTH_PASS"),
 		slog.Default())
 	if err != nil {
-		slog.Error("init web", "err", err)
+		slog.Error("init handler", "err", err)
 		os.Exit(1)
 	}
-	webSrv.Register(mux)
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           api.JSONErrors(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -142,6 +140,46 @@ func main() {
 	}
 
 	wg.Wait()
+}
+
+// buildHandler wires the full HTTP routing used by the service:
+// healthz, the JSON API (mounted under /api/), and the web UI.
+// The extracted helper exists so cmd/price-checker/main_test.go can
+// exercise the same wiring as main.go without booting a real server.
+//
+// Ownership:
+//   - internal/api is namespace-agnostic — it registers /searches,
+//     /searches/{id}, etc. on its own sub-mux.
+//   - main.go owns the public /api/ namespace. The prefix is added
+//     here via http.StripPrefix so the API sees /searches/{id}
+//     instead of /api/searches/{id}.
+//   - internal/web registers its routes directly on the top-level
+//     mux.
+//
+// The two namespaces are disjoint because both internal/api and
+// internal/web own GET /searches/{id}; the /api/ prefix keeps
+// http.ServeMux from panicking on the duplicate pattern. The
+// JSONErrors middleware is scoped to the API sub-mux so it doesn't
+// rewrite plain-text / HTML 404 responses from the web UI as JSON.
+func buildHandler(db *sql.DB, user, pass string, logger *slog.Logger) (http.Handler, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	st := store.New(db)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", healthz(db))
+	apiMux := http.NewServeMux()
+	api.New(st).Register(apiMux)
+	// StripPrefix("/api", ...) turns an external /api/searches/123
+	// into the internal /searches/123 that internal/api registers.
+	// JSONErrors wraps only the API sub-mux.
+	mux.Handle("/api/", http.StripPrefix("/api", api.JSONErrors(apiMux)))
+	webSrv, err := web.New(st, user, pass, logger)
+	if err != nil {
+		return nil, fmt.Errorf("init web: %w", err)
+	}
+	webSrv.Register(mux)
+	return mux, nil
 }
 
 func healthz(db *sql.DB) http.HandlerFunc {

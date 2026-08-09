@@ -2,3 +2,4 @@
 /price-checker
 *.test
 *.out
+.env

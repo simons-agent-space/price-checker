@@ -1,0 +1,31 @@
+{{define "content"}}
+<h2>Searches</h2>
+{{if .Searches}}
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Query</th>
+            <th>Interval</th>
+            <th>Next check</th>
+            <th>Products</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    {{range .Searches}}
+        <tr>
+            <td><a href="/searches/{{.ID}}">{{.Name}}</a></td>
+            <td class="muted">{{.Query}}</td>
+            <td>{{.CheckInterval}}</td>
+            <td>{{.NextCheckAt}}</td>
+            <td>{{.ProductCount}}</td>
+            <td><a class="btn" href="/searches/{{.ID}}">view</a></td>
+        </tr>
+    {{end}}
+    </tbody>
+</table>
+{{else}}
+<div class="empty">No searches yet. Create one via <code>POST /searches</code>.</div>
+{{end}}
+{{end}}

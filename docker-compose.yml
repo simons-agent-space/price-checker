@@ -1,0 +1,13 @@
+services:
+  price-checker:
+    build: .
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      DATABASE_URL: /data/price-checker.db
+    volumes:
+      - price-checker-data:/data
+    restart: unless-stopped
+
+volumes:
+  price-checker-data:

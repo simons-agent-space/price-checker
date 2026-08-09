@@ -54,6 +54,8 @@ jobs:
         env:
           BASIC_AUTH_USER: ci-user
           BASIC_AUTH_PASSWORD: ci-password
+          HTTP_BASIC_AUTH_USER: ci-user       # ← add
+          HTTP_BASIC_AUTH_PASS: ci-password   # ← add
         run: docker compose config --quiet
 
       - name: Build container image

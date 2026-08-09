@@ -186,3 +186,101 @@ func TestListDueSearches(t *testing.T) {
 		t.Errorf("Name = %q, want %q", due[0].Name, "due")
 	}
 }
+
+// TestCreateSearchWithProduct: the new method creates both a search
+// and a product in one transaction. The product's URL is the search
+// query, its search_id is the new search's ID.
+func TestCreateSearchWithProduct(t *testing.T) {
+	s := NewTestStore(t)
+	ctx := context.Background()
+
+	created, product, err := s.CreateSearchWithProduct(ctx, &Search{
+		Name:          "watch",
+		Query:         "https://example.com/product",
+		CheckInterval: time.Hour,
+		NextCheckAt:   time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == 0 {
+		t.Error("search ID = 0, want non-zero")
+	}
+	if product.ID == 0 {
+		t.Error("product ID = 0, want non-zero")
+	}
+	if product.SearchID != created.ID {
+		t.Errorf("product.SearchID = %d, want %d", product.SearchID, created.ID)
+	}
+	if product.URL != "https://example.com/product" {
+		t.Errorf("product.URL = %q, want %q", product.URL, "https://example.com/product")
+	}
+
+	// Rows are queryable through the normal store API.
+	got, err := s.GetSearch(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "watch" {
+		t.Errorf("Name = %q, want %q", got.Name, "watch")
+	}
+	products, err := s.ListProductsBySearch(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(products) != 1 {
+		t.Errorf("len(products) = %d, want 1", len(products))
+	}
+	if len(products) > 0 && products[0].URL != "https://example.com/product" {
+		t.Errorf("products[0].URL = %q, want %q", products[0].URL, "https://example.com/product")
+	}
+}
+
+// TestCreateSearchWithProductConflict: a duplicate (name, query) returns
+// ErrConflict and does not create a stray product or leave a half-written
+// search. This is the only atomicity path we can exercise at the store
+// layer: the product insert cannot fail on a fresh search_id because the
+// (search_id, url) unique constraint is satisfied for every new call.
+func TestCreateSearchWithProductConflict(t *testing.T) {
+	s := NewTestStore(t)
+	ctx := context.Background()
+
+	req := &Search{
+		Name:          "watch",
+		Query:         "https://example.com/product",
+		CheckInterval: time.Hour,
+		NextCheckAt:   time.Now().Add(time.Hour),
+	}
+
+	first, firstProduct, err := s.CreateSearchWithProduct(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second create with the same (name, query) — must conflict.
+	_, _, err = s.CreateSearchWithProduct(ctx, req)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("err = %v, want ErrConflict", err)
+	}
+
+	// The first search and product are intact; no extra product was
+	// created from the conflicted call.
+	products, err := s.ListProductsBySearch(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(products) != 1 {
+		t.Errorf("len(products) = %d, want 1 (no extra from conflict)", len(products))
+	}
+	if products[0].ID != firstProduct.ID {
+		t.Errorf("products[0].ID = %d, want %d", products[0].ID, firstProduct.ID)
+	}
+
+	all, err := s.ListSearches(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Errorf("len(searches) = %d, want 1 (no orphan from conflict)", len(all))
+	}
+}

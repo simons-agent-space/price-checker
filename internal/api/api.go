@@ -90,7 +90,7 @@ func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "check_interval must be at least 1 second")
 		return
 	}
-	created, err := s.store.CreateSearch(r.Context(), &store.Search{
+	created, _, err := s.store.CreateSearchWithProduct(r.Context(), &store.Search{
 		Name:          name,
 		Query:         query,
 		CheckInterval: interval,

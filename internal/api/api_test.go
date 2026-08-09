@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,18 @@ func newTestServer(t *testing.T) http.Handler {
 	mux := http.NewServeMux()
 	srv.Register(mux)
 	return api.JSONErrors(mux)
+}
+
+// newTestServerWithStore mirrors newTestServer but also returns the
+// underlying store, so tests can inspect side effects (e.g. products
+// created alongside a search) without going through the API.
+func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store) {
+	t.Helper()
+	st := store.NewTestStore(t)
+	srv := api.New(st)
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	return api.JSONErrors(mux), st
 }
 
 func TestCreateSearch(t *testing.T) {
@@ -329,5 +342,130 @@ func TestNotFoundJSON(t *testing.T) {
 	}
 	if body.Error == "" {
 		t.Error("error response missing 'error' field")
+	}
+}
+
+// TestCreateSearchCreatesProduct asserts that POST /api/searches also
+// creates a single product whose URL is the trimmed search query and
+// whose search_id is the new search. v1: a search is one product.
+func TestCreateSearchCreatesProduct(t *testing.T) {
+	handler, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	body := `{"name":"watch","query":"https://example.com/product","check_interval":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+
+	var created api.SearchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	products, err := st.ListProductsBySearch(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(products) != 1 {
+		t.Fatalf("len(products) = %d, want 1", len(products))
+	}
+	if products[0].URL != "https://example.com/product" {
+		t.Errorf("URL = %q, want %q", products[0].URL, "https://example.com/product")
+	}
+	if products[0].SearchID != created.ID {
+		t.Errorf("SearchID = %d, want %d", products[0].SearchID, created.ID)
+	}
+}
+
+// TestCreateSearchConflictNoExtraProduct asserts that a duplicate
+// (name, query) returns 409 and does not leave a stray product or
+// search behind from the failed call.
+func TestCreateSearchConflictNoExtraProduct(t *testing.T) {
+	handler, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	body := `{"name":"watch","query":"https://example.com/product","check_interval":"1h"}`
+
+	// First create — succeeds, creates one product.
+	var firstID int64
+	{
+		req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("first: status = %d, want 201", rec.Code)
+		}
+		var created api.SearchResponse
+		if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+			t.Fatal(err)
+		}
+		firstID = created.ID
+	}
+
+	// Second create with same body — 409, no extra product, no orphan search.
+	{
+		req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusConflict {
+			t.Errorf("duplicate: status = %d, want 409", rec.Code)
+		}
+	}
+
+	all, err := st.ListSearches(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Errorf("len(searches) = %d, want 1 (no orphan from conflict)", len(all))
+	}
+	products, err := st.ListProductsBySearch(ctx, firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(products) != 1 {
+		t.Errorf("len(products) = %d, want 1 (no extra from conflict)", len(products))
+	}
+}
+
+// TestCreateSearchInvalidCreatesNoProduct: an invalid request body
+// returns 4xx and creates no search or product. Complements
+// TestSearchesValidation by asserting the side effect rather than only
+// the response code.
+func TestCreateSearchInvalidCreatesNoProduct(t *testing.T) {
+	handler, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing name", `{"query":"x","check_interval":"1h"}`},
+		{"missing query", `{"name":"x","check_interval":"1h"}`},
+		{"invalid interval", `{"name":"x","query":"x","check_interval":"junk"}`},
+		{"malformed body", `{not json`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code < 400 {
+				t.Errorf("status = %d, want >= 400", rec.Code)
+			}
+		})
+	}
+
+	all, err := st.ListSearches(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Errorf("len(searches) = %d, want 0 (no orphan from invalid requests)", len(all))
 	}
 }

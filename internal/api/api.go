@@ -42,6 +42,20 @@ func New(s *store.Store) *Server {
 	return &Server{store: s}
 }
 
+// Register installs the JSON API routes on mux:
+//
+//	POST   /searches       create a search
+//	GET    /searches       list all searches
+//	GET    /searches/{id}  fetch a single search
+//	DELETE /searches/{id}  delete a search
+//
+// The package is namespace-agnostic — these routes are not prefixed
+// with /api/. The caller is responsible for mounting this mux under
+// the public URI prefix (e.g. /api/) so that the JSON API stays
+// disjoint from the HTML web UI routes registered by internal/web.
+// Both packages own GET /searches/{id}; the caller keeps
+// http.ServeMux from panicking on the duplicate pattern by keeping
+// the namespaces separate.
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /searches", s.createSearch)
 	mux.HandleFunc("GET /searches", s.listSearches)

@@ -4,7 +4,16 @@ Self-hosted price-monitoring service. Polls product URLs on a schedule, tracks p
 
 ## What works (v1)
 
-- **JSON API** — `POST/GET/DELETE /api/searches`, `GET /api/searches/{id}` (OpenClaw-facing contract). For v1, a search is a single-product watch: `POST /api/searches` atomically creates one product whose URL is the trimmed search query, so the scheduler polls it on the next tick.
+- **JSON API** — searches and products (OpenClaw-facing contract):
+  - `POST   /api/searches` — create a search (`name`, `query`, `check_interval`).
+  - `GET    /api/searches` — list searches.
+  - `GET    /api/searches/{id}` — fetch one.
+  - `DELETE /api/searches/{id}` — delete one (cascades to products).
+  - `POST   /api/searches/{id}/products` — add a discovered product URL to a search.
+  - `GET    /api/searches/{id}/products` — list the products in a search.
+  - `DELETE /api/products/{id}` — remove a single product.
+  
+  `search.query` is the discovery query / human requirement (e.g. `"compact rice cooker under 150 EUR"`). The actual product URLs that get monitored are added via the product endpoints by an external discovery system (OpenClaw). price-checker itself only watches known URLs.
 - **Scheduler** — background loop, polls due searches, calls the checker
 - **Checker** — fetches each product URL, parses the price, records the check, detects deals (rolling median, 20% threshold)
 - **Telegram notifier** — alerts on detected deals; silently `Noop` when `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` is missing (with a warning when exactly one is set)

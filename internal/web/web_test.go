@@ -33,16 +33,19 @@ func setupServer(t *testing.T) (*Server, *store.Search, *store.Product, *store.P
 	if err != nil {
 		t.Fatal(err)
 	}
-	p1ID, err := st.AddProduct(ctx, &store.Product{SearchID: search.ID, URL: "https://example.com/p/1"})
+	p1, err := st.AddProduct(ctx, &store.Product{SearchID: search.ID, URL: "https://example.com/p/1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p2ID, err := st.AddProduct(ctx, &store.Product{SearchID: search.ID, URL: "https://example.com/p/2"})
+	p2, err := st.AddProduct(ctx, &store.Product{SearchID: search.ID, URL: "https://example.com/p/2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p1, _ := st.GetProduct(ctx, p1ID)
-	p2, _ := st.GetProduct(ctx, p2ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = p1
+	_ = p2
 	s, err := New(st, "admin", "secret", silentLogger())
 	if err != nil {
 		t.Fatal(err)

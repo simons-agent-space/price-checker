@@ -30,6 +30,18 @@ type SearchResponse struct {
 	CreatedAt     int64  `json:"created_at"`
 }
 
+type CreateProductRequest struct {
+	URL string `json:"url"`
+}
+
+type ProductResponse struct {
+	ID            int64  `json:"id"`
+	SearchID      int64  `json:"search_id"`
+	URL           string `json:"url"`
+	LastCheckedAt *int64 `json:"last_checked_at,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
+}
+
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
@@ -44,10 +56,13 @@ func New(s *store.Store) *Server {
 
 // Register installs the JSON API routes on mux:
 //
-//	POST   /searches       create a search
-//	GET    /searches       list all searches
-//	GET    /searches/{id}  fetch a single search
-//	DELETE /searches/{id}  delete a search
+//	POST   /searches                 create a search
+//	GET    /searches                 list all searches
+//	GET    /searches/{id}            fetch a single search
+//	DELETE /searches/{id}            delete a search
+//	POST   /searches/{id}/products   add a product to a search
+//	GET    /searches/{id}/products   list products in a search
+//	DELETE /products/{id}            delete a product
 //
 // The package is namespace-agnostic — these routes are not prefixed
 // with /api/. The caller is responsible for mounting this mux under
@@ -61,6 +76,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /searches", s.listSearches)
 	mux.HandleFunc("GET /searches/{id}", s.getSearch)
 	mux.HandleFunc("DELETE /searches/{id}", s.deleteSearch)
+	mux.HandleFunc("POST /searches/{id}/products", s.addProduct)
+	mux.HandleFunc("GET /searches/{id}/products", s.listProducts)
+	mux.HandleFunc("DELETE /products/{id}", s.deleteProduct)
 }
 
 func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +108,7 @@ func (s *Server) createSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "check_interval must be at least 1 second")
 		return
 	}
-	created, _, err := s.store.CreateSearchWithProduct(r.Context(), &store.Search{
+	created, err := s.store.CreateSearch(r.Context(), &store.Search{
 		Name:          name,
 		Query:         query,
 		CheckInterval: interval,
@@ -155,6 +173,108 @@ func (s *Server) deleteSearch(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// addProduct attaches a product URL to an existing search. The search must
+// exist (404 otherwise); the URL must be non-empty after trim (400 otherwise);
+// duplicate (search_id, url) returns 409. v1 does not enforce any retailer or
+// URL-shape constraint — discovery is the external system's responsibility.
+func (s *Server) addProduct(w http.ResponseWriter, r *http.Request) {
+	searchID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	var req CreateProductRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusBadRequest, "request body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	url := strings.TrimSpace(req.URL)
+	if url == "" {
+		writeError(w, http.StatusBadRequest, "url is required")
+		return
+	}
+
+	// Pre-check the search exists so a missing search → 404 instead of
+	// leaking the FK constraint failure as 500. A race (search deleted
+	// between check and insert) would still surface as 500 — acceptable.
+	if _, err := s.store.GetSearch(r.Context(), searchID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "search not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to lookup search")
+		return
+	}
+
+	created, err := s.store.AddProduct(r.Context(), &store.Product{
+		SearchID: searchID,
+		URL:      url,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, "product with this url already exists in the search")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to create product")
+		return
+	}
+	writeJSON(w, http.StatusCreated, toProductResponse(created))
+}
+
+// listProducts returns the products belonging to a search. The search must
+// exist (404 otherwise); an empty search returns [] (not null).
+func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
+	searchID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	if _, err := s.store.GetSearch(r.Context(), searchID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "search not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to lookup search")
+		return
+	}
+
+	products, err := s.store.ListProductsBySearch(r.Context(), searchID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list products")
+		return
+	}
+	resp := make([]ProductResponse, 0, len(products))
+	for _, p := range products {
+		resp = append(resp, toProductResponse(p))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) deleteProduct(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := s.store.DeleteProduct(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "product not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to delete product")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func toResponse(s *store.Search) SearchResponse {
 	return SearchResponse{
 		ID:            s.ID,
@@ -163,6 +283,21 @@ func toResponse(s *store.Search) SearchResponse {
 		CheckInterval: s.CheckInterval.String(),
 		NextCheckAt:   s.NextCheckAt.Unix(),
 		CreatedAt:     s.CreatedAt.Unix(),
+	}
+}
+
+func toProductResponse(p *store.Product) ProductResponse {
+	var lastChecked *int64
+	if p.LastCheckedAt != nil {
+		ts := p.LastCheckedAt.Unix()
+		lastChecked = &ts
+	}
+	return ProductResponse{
+		ID:            p.ID,
+		SearchID:      p.SearchID,
+		URL:           p.URL,
+		LastCheckedAt: lastChecked,
+		CreatedAt:     p.CreatedAt.Unix(),
 	}
 }
 

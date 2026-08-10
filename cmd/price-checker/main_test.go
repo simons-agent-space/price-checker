@@ -132,7 +132,7 @@ func TestBuildHandlerWithAuth(t *testing.T) {
 		{"web root no auth", "GET", "/", "", false, http.StatusUnauthorized},
 		{"web root with auth", "GET", "/", "", true, http.StatusOK},
 		{"web search auth", "GET", "/searches/1", "", true, http.StatusOK},
-		{"web products auth", "GET", "/products/999", "", true, http.StatusNotFound}, // no product with id 999; 404 confirms the route is registered (handler-level, not mux-level)
+		{"web products auth", "GET", "/products/1", "", true, http.StatusNotFound}, // no product in fresh DB; 404 confirms the route is registered (handler-level, not mux-level)
 		{"web deals auth", "GET", "/deals", "", true, http.StatusOK},
 	}
 

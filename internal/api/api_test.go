@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -345,14 +346,14 @@ func TestNotFoundJSON(t *testing.T) {
 	}
 }
 
-// TestCreateSearchCreatesProduct asserts that POST /api/searches also
-// creates a single product whose URL is the trimmed search query and
-// whose search_id is the new search. v1: a search is one product.
-func TestCreateSearchCreatesProduct(t *testing.T) {
+// TestCreateSearchCreatesNoProduct asserts that POST /api/searches does not
+// create any product. v1: a search is a logical group; products are added
+// separately via POST /api/searches/{id}/products.
+func TestCreateSearchCreatesNoProduct(t *testing.T) {
 	handler, st := newTestServerWithStore(t)
 	ctx := context.Background()
 
-	body := `{"name":"watch","query":"https://example.com/product","check_interval":"1h"}`
+	body := `{"name":"watch","query":"compact rice cooker under 150 EUR","check_interval":"1h"}`
 	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -360,7 +361,6 @@ func TestCreateSearchCreatesProduct(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201", rec.Code)
 	}
-
 	var created api.SearchResponse
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
 		t.Fatal(err)
@@ -370,102 +370,422 @@ func TestCreateSearchCreatesProduct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(products) != 1 {
-		t.Fatalf("len(products) = %d, want 1", len(products))
-	}
-	if products[0].URL != "https://example.com/product" {
-		t.Errorf("URL = %q, want %q", products[0].URL, "https://example.com/product")
-	}
-	if products[0].SearchID != created.ID {
-		t.Errorf("SearchID = %d, want %d", products[0].SearchID, created.ID)
+	if len(products) != 0 {
+		t.Errorf("len(products) = %d, want 0", len(products))
 	}
 }
 
-// TestCreateSearchConflictNoExtraProduct asserts that a duplicate
-// (name, query) returns 409 and does not leave a stray product or
-// search behind from the failed call.
-func TestCreateSearchConflictNoExtraProduct(t *testing.T) {
+// TestAddProduct attaches a product URL to an existing search and verifies
+// the 201 response shape and store state.
+func TestAddProduct(t *testing.T) {
 	handler, st := newTestServerWithStore(t)
 	ctx := context.Background()
 
-	body := `{"name":"watch","query":"https://example.com/product","check_interval":"1h"}`
-
-	// First create — succeeds, creates one product.
-	var firstID int64
-	{
-		req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("first: status = %d, want 201", rec.Code)
-		}
-		var created api.SearchResponse
-		if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
-			t.Fatal(err)
-		}
-		firstID = created.ID
+	createBody := `{"name":"watch","query":"rice cooker","check_interval":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create search: status = %d, want 201", rec.Code)
 	}
-
-	// Second create with same body — 409, no extra product, no orphan search.
-	{
-		req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusConflict {
-			t.Errorf("duplicate: status = %d, want 409", rec.Code)
-		}
-	}
-
-	all, err := st.ListSearches(ctx)
-	if err != nil {
+	var search api.SearchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&search); err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 1 {
-		t.Errorf("len(searches) = %d, want 1 (no orphan from conflict)", len(all))
+
+	body := `{"url":"https://example.com/product"}`
+	req = httptest.NewRequest(http.MethodPost, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
 	}
-	products, err := st.ListProductsBySearch(ctx, firstID)
+	var product api.ProductResponse
+	if err := json.NewDecoder(rec.Body).Decode(&product); err != nil {
+		t.Fatal(err)
+	}
+	if product.ID == 0 {
+		t.Error("ID = 0, want non-zero")
+	}
+	if product.SearchID != search.ID {
+		t.Errorf("SearchID = %d, want %d", product.SearchID, search.ID)
+	}
+	if product.URL != "https://example.com/product" {
+		t.Errorf("URL = %q, want %q", product.URL, "https://example.com/product")
+	}
+	if product.CreatedAt == 0 {
+		t.Error("CreatedAt = 0, want non-zero")
+	}
+	if product.LastCheckedAt != nil {
+		t.Errorf("LastCheckedAt = %v, want nil for new product", product.LastCheckedAt)
+	}
+
+	products, err := st.ListProductsBySearch(ctx, search.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(products) != 1 {
-		t.Errorf("len(products) = %d, want 1 (no extra from conflict)", len(products))
+		t.Errorf("len(products) = %d, want 1", len(products))
 	}
 }
 
-// TestCreateSearchInvalidCreatesNoProduct: an invalid request body
-// returns 4xx and creates no search or product. Complements
-// TestSearchesValidation by asserting the side effect rather than only
-// the response code.
-func TestCreateSearchInvalidCreatesNoProduct(t *testing.T) {
+// TestAddProductTrimsURL asserts that surrounding whitespace is stripped
+// before storing, so callers can paste URLs without worrying about format.
+func TestAddProductTrimsURL(t *testing.T) {
 	handler, st := newTestServerWithStore(t)
 	ctx := context.Background()
+
+	createBody := `{"name":"watch","query":"rice cooker","check_interval":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var search api.SearchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&search); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"url":"  https://example.com/product  "}`
+	req = httptest.NewRequest(http.MethodPost, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rec.Code)
+	}
+	var product api.ProductResponse
+	if err := json.NewDecoder(rec.Body).Decode(&product); err != nil {
+		t.Fatal(err)
+	}
+	if product.URL != "https://example.com/product" {
+		t.Errorf("URL = %q, want %q (trimmed)", product.URL, "https://example.com/product")
+	}
+
+	products, _ := st.ListProductsBySearch(ctx, search.ID)
+	if len(products) > 0 && products[0].URL != "https://example.com/product" {
+		t.Errorf("stored URL = %q, want %q (trimmed)", products[0].URL, "https://example.com/product")
+	}
+}
+
+// TestAddProductEmptyURL: empty, whitespace-only, or missing URL → 400 and
+// no product row.
+func TestAddProductEmptyURL(t *testing.T) {
+	handler, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	createBody := `{"name":"watch","query":"rice cooker","check_interval":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var search api.SearchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&search); err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name string
 		body string
 	}{
-		{"missing name", `{"query":"x","check_interval":"1h"}`},
-		{"missing query", `{"name":"x","check_interval":"1h"}`},
-		{"invalid interval", `{"name":"x","query":"x","check_interval":"junk"}`},
-		{"malformed body", `{not json`},
+		{"empty url", `{"url":""}`},
+		{"whitespace url", `{"url":"   "}`},
+		{"missing url", `{}`},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(tc.body))
+			req := httptest.NewRequest(http.MethodPost, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", strings.NewReader(tc.body))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
-			if rec.Code < 400 {
-				t.Errorf("status = %d, want >= 400", rec.Code)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+			var errResp api.ErrorResponse
+			if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+				t.Errorf("invalid JSON error body: %v", err)
+			}
+			if errResp.Error == "" {
+				t.Error("error response missing 'error' field")
 			}
 		})
 	}
 
-	all, err := st.ListSearches(ctx)
-	if err != nil {
+	products, _ := st.ListProductsBySearch(ctx, search.ID)
+	if len(products) != 0 {
+		t.Errorf("len(products) = %d, want 0 (no product from invalid requests)", len(products))
+	}
+}
+
+// TestAddProductMissingSearch: POST /searches/999/products → 404, no row.
+func TestAddProductMissingSearch(t *testing.T) {
+	handler, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	body := `{"url":"https://example.com/product"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches/999/products", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+	var errResp api.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Errorf("invalid JSON error body: %v", err)
+	}
+	if errResp.Error == "" {
+		t.Error("error response missing 'error' field")
+	}
+
+	products, _ := st.ListProductsBySearch(ctx, 999)
+	if len(products) != 0 {
+		t.Errorf("len(products) = %d, want 0 (no row from missing search)", len(products))
+	}
+}
+
+// TestAddProductDuplicate: adding the same URL to the same search twice →
+// 409 on the second call, no extra row.
+func TestAddProductDuplicate(t *testing.T) {
+	handler, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	createBody := `{"name":"watch","query":"rice cooker","check_interval":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var search api.SearchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&search); err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 0 {
-		t.Errorf("len(searches) = %d, want 0 (no orphan from invalid requests)", len(all))
+
+	body := `{"url":"https://example.com/product"}`
+
+	// First add → 201.
+	req = httptest.NewRequest(http.MethodPost, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first add: status = %d, want 201", rec.Code)
+	}
+
+	// Second add → 409, no extra row.
+	req = httptest.NewRequest(http.MethodPost, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("duplicate: status = %d, want 409", rec.Code)
+	}
+
+	products, _ := st.ListProductsBySearch(ctx, search.ID)
+	if len(products) != 1 {
+		t.Errorf("len(products) = %d, want 1 (no extra from duplicate)", len(products))
+	}
+}
+
+// TestAddProductSameURLDifferentSearch: the schema permits the same URL
+// to live in two different searches (the (search_id, url) UNIQUE is scoped
+// per search). v1 leaves cross-search dedupe to the discovery system.
+func TestAddProductSameURLDifferentSearch(t *testing.T) {
+	handler, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	for _, name := range []string{"watch1", "watch2"} {
+		body := `{"name":"` + name + `","query":"rice cooker","check_interval":"1h"}`
+		req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %q: status = %d, want 201", name, rec.Code)
+		}
+	}
+	searches, _ := st.ListSearches(ctx)
+	if len(searches) != 2 {
+		t.Fatalf("len(searches) = %d, want 2", len(searches))
+	}
+
+	body := `{"url":"https://example.com/product"}`
+	for _, search := range searches {
+		req := httptest.NewRequest(http.MethodPost, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Errorf("add to search %d: status = %d, want 201", search.ID, rec.Code)
+		}
+	}
+
+	for _, search := range searches {
+		products, _ := st.ListProductsBySearch(ctx, search.ID)
+		if len(products) != 1 {
+			t.Errorf("search %d: len(products) = %d, want 1", search.ID, len(products))
+		}
+	}
+}
+
+// TestListProducts: GET /searches/{id}/products returns the products.
+func TestListProducts(t *testing.T) {
+	handler := newTestServer(t)
+
+	createBody := `{"name":"watch","query":"rice cooker","check_interval":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var search api.SearchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&search); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, url := range []string{"https://a.example/p", "https://b.example/p"} {
+		body := `{"url":"` + url + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", strings.NewReader(body))
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("add %q: status = %d, want 201", url, rec.Code)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var products []api.ProductResponse
+	if err := json.NewDecoder(rec.Body).Decode(&products); err != nil {
+		t.Fatal(err)
+	}
+	if len(products) != 2 {
+		t.Errorf("len = %d, want 2", len(products))
+	}
+	seen := map[string]bool{}
+	for _, p := range products {
+		seen[p.URL] = true
+	}
+	if !seen["https://a.example/p"] || !seen["https://b.example/p"] {
+		t.Errorf("missing URL in response: %+v", products)
+	}
+}
+
+// TestListProductsEmpty: an empty search returns [], not null.
+func TestListProductsEmpty(t *testing.T) {
+	handler := newTestServer(t)
+
+	createBody := `{"name":"watch","query":"rice cooker","check_interval":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var search api.SearchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&search); err != nil {
+		t.Fatal(err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := strings.TrimSpace(rec.Body.String())
+	if body != "[]" {
+		t.Errorf("body = %q, want %q", body, "[]")
+	}
+}
+
+// TestListProductsMissingSearch: GET /searches/999/products → 404.
+func TestListProductsMissingSearch(t *testing.T) {
+	handler := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/searches/999/products", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestDeleteProduct: DELETE /products/{id} → 204 and the row is gone.
+func TestDeleteProduct(t *testing.T) {
+	handler, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	createBody := `{"name":"watch","query":"rice cooker","check_interval":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var search api.SearchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&search); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"url":"https://example.com/product"}`
+	req = httptest.NewRequest(http.MethodPost, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var product api.ProductResponse
+	if err := json.NewDecoder(rec.Body).Decode(&product); err != nil {
+		t.Fatal(err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/products/"+strconv.FormatInt(product.ID, 10), nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("delete: status = %d, want 204", rec.Code)
+	}
+
+	if _, err := st.GetProduct(ctx, product.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetProduct after delete: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestDeleteProductMissing: DELETE /products/999 → 404.
+func TestDeleteProductMissing(t *testing.T) {
+	handler := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/products/999", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestDeleteSearchCascadesProducts: deleting a search removes its products
+// (ON DELETE CASCADE on products.search_id). The store layer already proves
+// the FK; this guards the API path.
+func TestDeleteSearchCascadesProducts(t *testing.T) {
+	handler, st := newTestServerWithStore(t)
+	ctx := context.Background()
+
+	createBody := `{"name":"watch","query":"rice cooker","check_interval":"1h"}`
+	req := httptest.NewRequest(http.MethodPost, "/searches", strings.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var search api.SearchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&search); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"url":"https://example.com/product"}`
+	req = httptest.NewRequest(http.MethodPost, "/searches/"+strconv.FormatInt(search.ID, 10)+"/products", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var product api.ProductResponse
+	if err := json.NewDecoder(rec.Body).Decode(&product); err != nil {
+		t.Fatal(err)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/searches/"+strconv.FormatInt(search.ID, 10), nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete search: status = %d, want 204", rec.Code)
+	}
+
+	if _, err := st.GetProduct(ctx, product.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("product should be cascade-deleted, got err = %v", err)
 	}
 }

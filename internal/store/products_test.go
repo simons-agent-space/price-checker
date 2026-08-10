@@ -72,10 +72,11 @@ func TestGetProduct(t *testing.T) {
 		CheckInterval: time.Hour,
 		NextCheckAt:   time.Now().Add(time.Hour),
 	})
-	productID, _ := s.AddProduct(ctx, &Product{
+	p, _ := s.AddProduct(ctx, &Product{
 		SearchID: created.ID,
 		URL:      "https://example.com",
 	})
+	productID := p.ID
 
 	got, err := s.GetProduct(ctx, productID)
 	if err != nil {
@@ -104,10 +105,11 @@ func TestDeleteProduct(t *testing.T) {
 		CheckInterval: time.Hour,
 		NextCheckAt:   time.Now().Add(time.Hour),
 	})
-	productID, _ := s.AddProduct(ctx, &Product{
+	p, _ := s.AddProduct(ctx, &Product{
 		SearchID: created.ID,
 		URL:      "https://example.com",
 	})
+	productID := p.ID
 
 	if err := s.DeleteProduct(ctx, productID); err != nil {
 		t.Fatal(err)

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func (s *Store) AddProduct(ctx context.Context, product *Product) (int64, error) {
+func (s *Store) AddProduct(ctx context.Context, product *Product) (*Product, error) {
 	var lastChecked any
 	if product.LastCheckedAt != nil {
 		lastChecked = product.LastCheckedAt.Unix()
@@ -18,9 +18,13 @@ func (s *Store) AddProduct(ctx context.Context, product *Product) (int64, error)
 		VALUES (?, ?, ?)
 	`, product.SearchID, product.URL, lastChecked)
 	if err != nil {
-		return 0, mapError(err)
+		return nil, mapError(err)
 	}
-	return result.LastInsertId()
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return s.GetProduct(ctx, id)
 }
 
 func (s *Store) GetProduct(ctx context.Context, id int64) (*Product, error) {

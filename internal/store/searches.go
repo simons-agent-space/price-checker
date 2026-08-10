@@ -25,60 +25,6 @@ func (s *Store) CreateSearch(ctx context.Context, search *Search) (*Search, erro
 	}
 	return result, nil
 }
-
-// CreateSearchWithProduct creates a search and one product in a single
-// transaction. The product's URL is the (already-trimmed) search query;
-// its search_id is the new search's ID. If either insert fails the
-// transaction is rolled back and no rows are written.
-//
-// v1 simplification: a "search" is a single product watch. The product
-// URL is whatever the caller put in the search query. When a richer
-// "many products per search" workflow lands, this method should be
-// removed and the API should accept a product URL separately.
-func (s *Store) CreateSearchWithProduct(ctx context.Context, search *Search) (*Search, *Product, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	// Rollback is a no-op after a successful Commit; deferring it
-	// guarantees the transaction is closed on any error path.
-	defer func() { _ = tx.Rollback() }()
-
-	row := tx.QueryRowContext(ctx, `
-		INSERT INTO searches (name, query, check_interval_s, next_check_at)
-		VALUES (?, ?, ?, ?)
-		RETURNING id, name, query, check_interval_s, next_check_at, created_at
-	`, search.Name, search.Query, int64(search.CheckInterval.Seconds()), search.NextCheckAt.Unix())
-	created, err := scanSearch(row)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			return nil, nil, ErrConflict
-		}
-		return nil, nil, err
-	}
-
-	insertResult, err := tx.ExecContext(ctx, `
-		INSERT INTO products (search_id, url) VALUES (?, ?)
-	`, created.ID, created.Query)
-	if err != nil {
-		return nil, nil, err
-	}
-	productID, err := insertResult.LastInsertId()
-	if err != nil {
-		return nil, nil, err
-	}
-	product := &Product{
-		ID:       productID,
-		SearchID: created.ID,
-		URL:      created.Query,
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, nil, err
-	}
-	return created, product, nil
-}
-
 func (s *Store) GetSearch(ctx context.Context, id int64) (*Search, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, name, query, check_interval_s, next_check_at, created_at

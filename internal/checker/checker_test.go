@@ -181,14 +181,14 @@ func setupSearchProduct(t *testing.T, url string) (*store.Store, *store.Search, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	productID, err := st.AddProduct(ctx, &store.Product{
+	prod, err := st.AddProduct(ctx, &store.Product{
 		SearchID: search.ID,
 		URL:      url,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	product, err := st.GetProduct(ctx, productID)
+	product, err := st.GetProduct(ctx, prod.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
